@@ -14,6 +14,7 @@ DatasetSplit is a Python desktop application that splits a dataset into training
 - Overwrite, skip, and abort handling for existing files
 - Retry, skip, and abort handling for copy errors
 - Optional random seed for reproducibility
+- Settings persistence
 
 ## Requirements
 
