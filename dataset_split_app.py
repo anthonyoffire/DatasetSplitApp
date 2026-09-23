@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import json
 import os
 import random
 import shutil
@@ -10,6 +11,8 @@ from queue import Empty, Queue
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+CONFIG_PATH = Path(__file__).with_name("dataset_split_config.json")
+
 
 def normalize_extensions(value: str) -> set[str]:
     return {
@@ -18,10 +21,25 @@ def normalize_extensions(value: str) -> set[str]:
         if extension.strip().lstrip(".")
     }
 
-
 def extensions_are_valid(value: str) -> bool:
     entries = value.split(",")
     return bool(value.strip()) and all(entry.strip().lstrip(".") for entry in entries)
+
+
+def load_app_config() -> dict:
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
+            value = json.load(config_file)
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_app_config(values: dict) -> None:
+    try:
+        CONFIG_PATH.write_text(json.dumps(values, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def parse_percentages(*values: str) -> tuple[float, float, float]:
@@ -274,6 +292,12 @@ def create_dataset_split(
     processed_files = 0
     total_to_process = sum(len(group) for group in split_map.values())
 
+    def mark_processed() -> None:
+        nonlocal processed_files
+        processed_files += 1
+        if progress_callback:
+            progress_callback(processed_files, total_to_process)
+
     for split_name, dst_root in {
         "train": train_root,
         "val": val_root,
@@ -295,6 +319,7 @@ def create_dataset_split(
             while True:
                 if dst_path.exists() and overwrite_action != "overwrite":
                     if overwrite_action == "skip":
+                        mark_processed()
                         break
                     if overwrite_handler is None:
                         action = "Overwrite"
@@ -306,6 +331,7 @@ def create_dataset_split(
                     if action in ("Skip", "Skip all"):
                         if apply_all or action == "Skip all":
                             overwrite_action = "skip"
+                        mark_processed()
                         break
                     if apply_all:
                         overwrite_action = "overwrite"
@@ -316,12 +342,11 @@ def create_dataset_split(
                     else:
                         shutil.move(src_path, dst_path)
                     successful_counts[split_name] += 1
-                    processed_files += 1
-                    if progress_callback:
-                        progress_callback(processed_files, total_to_process)
+                    mark_processed()
                     break
                 except OSError as exc:
                     if failure_action == "Continue on all":
+                        mark_processed()
                         break
                     if copy_failure_handler is None:
                         raise
@@ -331,9 +356,7 @@ def create_dataset_split(
                     if action in ("Skip", "Skip all"):
                         if action == "Skip all":
                             failure_action = "Continue on all"
-                        processed_files += 1
-                        if progress_callback:
-                            progress_callback(processed_files, total_to_process)
+                        mark_processed()
                         break
                     if apply_all:
                         failure_action = "Continue on all"
@@ -362,7 +385,7 @@ def build_preview_label(total_files: int, counts: dict[str, int]) -> str:
     return (
         f"Source files: {total_files:,}\n"
         f"Train: {counts['train']:,}\n"
-        f"Validation: {counts['val']:,}\n"
+        f"Val: {counts['val']:,}\n"
         f"Test: {counts['test']:,}"
     )
 
@@ -389,7 +412,25 @@ def build_preview_warning(total_files: int, counts: dict[str, int]) -> str:
 
 
 def set_preview_message(preview_label: tk.Label, warning_label: tk.Label, message: str, warning: str = "") -> None:
-    preview_label.config(text=message)
+    status_label = getattr(preview_label, "status_label", preview_label)
+    preview_table = getattr(preview_label, "preview_table", None)
+    status_label.config(text=message)
+    if hasattr(preview_label, "status_label"):
+        status_label.pack(pady=14)
+    if preview_table is not None:
+        preview_table.pack_forget()
+    warning_label.config(text=warning)
+
+
+def set_preview_counts(preview_label: tk.Frame, warning_label: tk.Label, total_files: int, counts: dict[str, int], warning: str = "") -> None:
+    status_label = getattr(preview_label, "status_label")
+    preview_table = getattr(preview_label, "preview_table")
+    status_label.config(text="")
+    status_label.pack_forget()
+    preview_table.pack(anchor="center")
+    values = (total_files, counts["train"], counts["val"], counts["test"])
+    for value_label, value in zip(preview_table.value_labels, values):
+        value_label.config(text=f"{value:,}")
     warning_label.config(text=warning)
 
 
@@ -504,10 +545,11 @@ def update_preview(
                             "No matching files found in the selected source directory.",
                         )
                     else:
-                        set_preview_message(
+                        set_preview_counts(
                             preview_label,
                             warning_label,
-                            build_preview_label(total_files, counts),
+                            total_files,
+                            counts,
                             build_preview_warning(total_files, counts),
                         )
 
@@ -525,6 +567,7 @@ def main():
     root = tk.Tk()
     root.title("Dataset Splitter")
     root.resizable(False, False)
+    config = load_app_config()
 
     label_font = ("TkDefaultFont", 12)
     section_font = ("TkDefaultFont", 12, "bold")
@@ -543,12 +586,30 @@ def main():
     preview_queue = Queue()
     split_cancel_event = threading.Event()
     split_running = [False]
-    extension_mode_var = tk.StringVar(value="all")
-    extension_var = tk.StringVar()
-    parse_all_subdirectories_var = tk.BooleanVar(value=True)
-    retain_subdirectories_var = tk.BooleanVar(value=True)
-    write_split_info_var = tk.BooleanVar(value=True)
+    split_progress_state = [0, 1]
+    extension_mode_var = tk.StringVar(value=config.get("extension_mode", "all"))
+    extension_var = tk.StringVar(value=config.get("extensions", ""))
+    parse_all_subdirectories_var = tk.BooleanVar(value=config.get("parse_all_subdirectories", True))
+    retain_subdirectories_var = tk.BooleanVar(value=config.get("retain_subdirectories", True))
+    write_split_info_var = tk.BooleanVar(value=config.get("write_split_info", True))
+    random_seed_var = tk.BooleanVar(value=config.get("use_seed", True))
+    seed_var = tk.StringVar(value=str(config.get("seed", "42")))
 
+    directory_frame = tk.Frame(root)
+    directory_frame.pack(fill="x", padx=30)
+
+    section_grid = tk.Frame(root)
+    section_grid.pack(fill="x", padx=30)
+    section_grid.columnconfigure(0, weight=1)
+    section_grid.columnconfigure(1, weight=1)
+    left_top_frame = tk.Frame(section_grid)
+    left_top_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    right_top_frame = tk.Frame(section_grid)
+    right_top_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+    left_bottom_frame = tk.Frame(section_grid)
+    left_bottom_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
+    right_bottom_frame = tk.Frame(section_grid)
+    right_bottom_frame.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
     def choose_dir(var: tk.StringVar):
         selected = filedialog.askdirectory(parent=root)
         if selected:
@@ -611,14 +672,23 @@ def main():
     process_preview_queue()
 
     def update_split_progress(completed: int, total: int):
-        percent = completed / total * 100 if total else 100
-        preview_queue.put(lambda: update_progress_display(completed, total, percent))
+        split_progress_state[0] = completed
+        split_progress_state[1] = total
 
     def update_progress_display(completed: int, total: int, percent: float):
         split_progress_label.config(text=f"{completed} / {total}")
         progress_total[0] = max(total, 1)
         progress_completed[0] = completed
         draw_progress_bar(percent)
+
+    def poll_split_progress():
+        if split_running[0]:
+            completed, total = split_progress_state
+            percent = completed / total * 100 if total else 100
+            update_progress_display(completed, total, percent)
+        root.after(50, poll_split_progress)
+
+    poll_split_progress()
 
     def set_controls_enabled(enabled: bool):
         state = "!disabled" if enabled else "disabled"
@@ -638,6 +708,8 @@ def main():
             visit(child)
 
     def split_finished(counts: dict[str, int] | None, error: str | None, cancelled: bool = False):
+        completed, total = split_progress_state
+        update_progress_display(completed, total, completed / total * 100 if total else 100)
         split_running[0] = False
         split_cancel_event.clear()
         set_progress_visible(False)
@@ -695,6 +767,11 @@ def main():
         retain_subdirectories = parse_all_subdirectories_var.get() and retain_subdirectories_var.get()
         parse_all = parse_all_subdirectories_var.get()
         write_split_info = write_split_info_var.get()
+        try:
+            seed = int(seed_var.get()) if random_seed_var.get() else random.SystemRandom().randint(0, 2**32 - 1)
+        except ValueError:
+            messagebox.showerror("Invalid seed", "The seed must be an integer.")
+            return
         split_running[0] = True
         split_cancel_event.clear()
         set_controls_enabled(False)
@@ -702,6 +779,8 @@ def main():
         generate_button.configure(text="Cancel", command=cancel_split, state="normal")
         progress_total[0] = max(cached_file_count[0] or 1, 1)
         progress_completed[0] = 0
+        split_progress_state[0] = 0
+        split_progress_state[1] = progress_total[0]
         draw_progress_bar(0)
         split_progress_label.config(text="0 / 0")
         cancelled_state = [False]
@@ -725,6 +804,7 @@ def main():
                     parse_all_subdirectories=parse_all,
                     write_split_info_file=write_split_info,
                     copy_files=True,
+                    seed=seed,
                     overwrite_handler=decide_overwrite,
                     copy_failure_handler=decide_copy_failure,
                     progress_callback=update_split_progress,
@@ -743,16 +823,16 @@ def main():
             split_progress_label.config(text="Cancelling...")
 
     # Source dir
-    tk.Label(root, text="Source Directory", font=section_font).pack(anchor="w", padx=30, pady=(14, 3))
-    source_entry = ttk.Entry(root, textvariable=source_var, state="readonly")
-    source_entry.pack(padx=30, fill="x")
-    tk.Button(root, text="Choose folder", command=lambda: choose_dir(source_var), width=18, cursor="hand2").pack(pady=(6, 0), padx=30, fill="x")
+    tk.Label(directory_frame, text="Source Directory", font=section_font).pack(anchor="w", pady=(14, 3))
+    source_entry = ttk.Entry(directory_frame, textvariable=source_var, state="readonly")
+    source_entry.pack(fill="x")
+    tk.Button(directory_frame, text="Choose folder", command=lambda: choose_dir(source_var), width=18, cursor="hand2").pack(pady=(6, 0), fill="x")
 
-    tk.Label(root, text="Extensions", font=section_font).pack(anchor="w", padx=30, pady=(20, 5))
-    extension_options_frame = tk.Frame(root)
-    extension_options_frame.pack(anchor="w", padx=30, fill="x")
-    all_extensions_var = tk.IntVar(value=1)
-    specified_extensions_var = tk.IntVar(value=0)
+    tk.Label(right_top_frame, text="Extensions", font=section_font).pack(anchor="w", pady=(14, 5))
+    extension_options_frame = tk.Frame(right_top_frame)
+    extension_options_frame.pack(anchor="w", fill="x")
+    all_extensions_var = tk.IntVar(value=1 if extension_mode_var.get() == "all" else 0)
+    specified_extensions_var = tk.IntVar(value=1 if extension_mode_var.get() == "specified" else 0)
     extension_status_var = tk.StringVar()
 
     extension_entry = ttk.Entry(extension_options_frame, textvariable=extension_var, state="disabled")
@@ -810,6 +890,8 @@ def main():
     )
     extension_status_label.pack(anchor="w", pady=(2, 0))
     extension_var.trace_add("write", update_extension_status)
+    extension_entry.state(["!disabled"] if extension_mode_var.get() == "specified" else ["disabled"])
+    update_extension_status()
 
     def remove_extension_focus(event):
         if event.widget is not extension_entry and not isinstance(event.widget, (tk.Entry, ttk.Entry)):
@@ -820,9 +902,9 @@ def main():
     extension_entry.bind("<FocusOut>", lambda _event: refresh_preview())
 
     # Split percentages row
-    tk.Label(root, text="Desired Split Percentages", font=section_font).pack(anchor="w", padx=30, pady=(20, 5))
-    pct_frame = tk.Frame(root)
-    pct_frame.pack(padx=30, pady=(0, 14), fill="x")
+    tk.Label(left_top_frame, text="Desired Split Percentages", font=section_font).pack(anchor="w", pady=(14, 12))
+    pct_frame = tk.Frame(left_top_frame)
+    pct_frame.pack(pady=(0, 14), fill="x")
 
     for column in range(3):
         pct_frame.columnconfigure(column, weight=1)
@@ -831,9 +913,9 @@ def main():
     tk.Label(pct_frame, text="Val %", font=label_font).grid(row=0, column=1, padx=10)
     tk.Label(pct_frame, text="Test %", font=label_font).grid(row=0, column=2, padx=10)
 
-    train_pct_var = tk.StringVar(value="80")
-    val_pct_var = tk.StringVar(value="10")
-    test_pct_var = tk.StringVar(value="10")
+    train_pct_var = tk.StringVar(value=str(config.get("train_percentage", "80")))
+    val_pct_var = tk.StringVar(value=str(config.get("val_percentage", "10")))
+    test_pct_var = tk.StringVar(value=str(config.get("test_percentage", "10")))
 
     def update_train_percentage(*_):
         try:
@@ -842,10 +924,10 @@ def main():
         except ValueError:
             train_pct_var.set("")
 
-    train_pct_entry = ttk.Entry(pct_frame, textvariable=train_pct_var, width=10, state="readonly")
-    train_pct_entry.grid(row=1, column=0, padx=10)
-    ttk.Entry(pct_frame, textvariable=val_pct_var, width=10).grid(row=1, column=1, padx=10)
-    ttk.Entry(pct_frame, textvariable=test_pct_var, width=10).grid(row=1, column=2, padx=10)
+    train_pct_entry = ttk.Entry(pct_frame, textvariable=train_pct_var, width=8, justify="center", state="readonly")
+    train_pct_entry.grid(row=1, column=0, padx=10, pady=(5, 0))
+    ttk.Entry(pct_frame, textvariable=val_pct_var, width=8, justify="center").grid(row=1, column=1, padx=10, pady=(5, 0))
+    ttk.Entry(pct_frame, textvariable=test_pct_var, width=8, justify="center").grid(row=1, column=2, padx=10, pady=(5, 0))
 
     def update_preview_from_percentages(*_):
         update_train_percentage()
@@ -855,9 +937,9 @@ def main():
         widget.trace_add("write", update_preview_from_percentages)
 
     # Optional limits
-    tk.Label(root, text="Optional Minimum/Maximum File Counts", font=section_font).pack(anchor="w", padx=30, pady=(8, 5))
-    limits_frame = tk.Frame(root)
-    limits_frame.pack(padx=30, pady=(0, 14), fill="x")
+    tk.Label(left_bottom_frame, text="Optional Min/Max File Counts", font=section_font).pack(anchor="w", pady=(8, 12))
+    limits_frame = tk.Frame(left_bottom_frame)
+    limits_frame.pack(pady=(0, 14), fill="x")
 
     for column in range(4):
         limits_frame.columnconfigure(column, weight=1)
@@ -870,12 +952,12 @@ def main():
     tk.Label(limits_frame, text="Min", font=limits_font).grid(row=1, column=0, padx=10)
     tk.Label(limits_frame, text="Max", font=limits_font).grid(row=2, column=0, padx=10)
 
-    min_train_var = tk.StringVar()
-    min_val_var = tk.StringVar()
-    min_test_var = tk.StringVar()
-    max_train_var = tk.StringVar()
-    max_val_var = tk.StringVar()
-    max_test_var = tk.StringVar()
+    min_train_var = tk.StringVar(value=str(config.get("min_train", "")))
+    min_val_var = tk.StringVar(value=str(config.get("min_val", "")))
+    min_test_var = tk.StringVar(value=str(config.get("min_test", "")))
+    max_train_var = tk.StringVar(value=str(config.get("max_train", "")))
+    max_val_var = tk.StringVar(value=str(config.get("max_val", "")))
+    max_test_var = tk.StringVar(value=str(config.get("max_test", "")))
 
     def refresh_preview():
         update_preview(
@@ -906,20 +988,20 @@ def main():
             preview_queue,
         )
 
-    ttk.Entry(limits_frame, textvariable=min_train_var, width=12).grid(row=1, column=1, padx=10)
-    ttk.Entry(limits_frame, textvariable=min_val_var, width=12).grid(row=1, column=2, padx=10)
-    ttk.Entry(limits_frame, textvariable=min_test_var, width=12).grid(row=1, column=3, padx=10)
+    ttk.Entry(limits_frame, textvariable=min_train_var, width=10, justify="center").grid(row=1, column=1, padx=10, pady=(5, 0))
+    ttk.Entry(limits_frame, textvariable=min_val_var, width=10, justify="center").grid(row=1, column=2, padx=10, pady=(5, 0))
+    ttk.Entry(limits_frame, textvariable=min_test_var, width=10, justify="center").grid(row=1, column=3, padx=10, pady=(5, 0))
 
-    ttk.Entry(limits_frame, textvariable=max_train_var, width=12).grid(row=2, column=1, padx=10)
-    ttk.Entry(limits_frame, textvariable=max_val_var, width=12).grid(row=2, column=2, padx=10)
-    ttk.Entry(limits_frame, textvariable=max_test_var, width=12).grid(row=2, column=3, padx=10)
+    ttk.Entry(limits_frame, textvariable=max_train_var, width=10, justify="center").grid(row=2, column=1, padx=10)
+    ttk.Entry(limits_frame, textvariable=max_val_var, width=10, justify="center").grid(row=2, column=2, padx=10)
+    ttk.Entry(limits_frame, textvariable=max_test_var, width=10, justify="center").grid(row=2, column=3, padx=10)
 
     for var in [min_train_var, min_val_var, min_test_var, max_train_var, max_val_var, max_test_var]:
         var.trace_add("write", lambda *_: refresh_preview())
 
-    tk.Label(root, text="Options", font=section_font).pack(anchor="w", padx=30, pady=(8, 5))
-    retain_options_frame = tk.Frame(root)
-    retain_options_frame.pack(anchor="w", padx=50, fill="x")
+    tk.Label(right_bottom_frame, text="Options", font=section_font).pack(anchor="w", pady=(8, 5))
+    retain_options_frame = tk.Frame(right_bottom_frame)
+    retain_options_frame.pack(anchor="w", fill="x", padx=20)
 
     def toggle_parse_subdirectories():
         if parse_all_subdirectories_var.get():
@@ -953,22 +1035,63 @@ def main():
         variable=write_split_info_var,
     ).pack(anchor="w", pady=(4, 0))
 
-    tk.Label(root, text="Output Directory", font=section_font).pack(anchor="w", padx=30, pady=(6, 3))
-    output_entry = ttk.Entry(root, textvariable=output_root_var, state="readonly")
-    output_entry.pack(padx=30, fill="x")
-    tk.Button(root, text="Choose folder", command=lambda: choose_dir(output_root_var), width=18, cursor="hand2").pack(pady=(6, 0), padx=30, fill="x")
+    seed_row = tk.Frame(retain_options_frame)
+    seed_row.pack(anchor="w", pady=(4, 0))
+    random_seed_check = ttk.Checkbutton(
+        seed_row,
+        text="Use seed",
+        variable=random_seed_var,
+    )
+    random_seed_check.pack(side="left")
+    tk.Label(seed_row, text="Seed:", font=limits_font).pack(side="left", padx=(12, 4))
+    seed_entry = ttk.Entry(seed_row, textvariable=seed_var, width=10)
+    seed_entry.pack(side="left")
+
+    def update_seed_state(*_):
+        seed_entry.state(["!disabled"] if random_seed_var.get() else ["disabled"])
+
+    random_seed_var.trace_add("write", update_seed_state)
+    update_seed_state()
+
+    root.update_idletasks()
+    top_height = max(left_top_frame.winfo_reqheight(), right_top_frame.winfo_reqheight())
+    bottom_height = max(left_bottom_frame.winfo_reqheight(), right_bottom_frame.winfo_reqheight())
+    for frame, height in (
+        (left_top_frame, top_height),
+        (right_top_frame, top_height),
+        (left_bottom_frame, bottom_height),
+        (right_bottom_frame, bottom_height),
+    ):
+        frame.configure(height=height)
+        frame.grid_propagate(False)
+
+    tk.Label(directory_frame, text="Output Directory", font=section_font).pack(anchor="w", pady=(20, 3))
+    output_entry = ttk.Entry(directory_frame, textvariable=output_root_var, state="readonly")
+    output_entry.pack(fill="x")
+    tk.Button(directory_frame, text="Choose folder", command=lambda: choose_dir(output_root_var), width=18, cursor="hand2").pack(pady=(6, 20), fill="x")
 
     tk.Label(root, text="Split Preview", font=section_font).pack(anchor="w", padx=30, pady=(20, 3))
-    preview_label = tk.Label(root, justify="left", anchor="w", padx=30, pady=14, height=4, font=label_font)
+    preview_label = tk.Frame(root, height=90)
     preview_label.pack(fill="x", pady=(0, 0))
+    preview_label.pack_propagate(False)
+    preview_label.status_label = tk.Label(preview_label, font=label_font)
+    preview_label.status_label.pack(pady=14)
+    preview_table = tk.Frame(preview_label)
+    preview_table.value_labels = []
+    for row, (set_name, value) in enumerate((("Source", ""), ("Train", ""), ("Validation", ""), ("Test", ""))):
+        tk.Label(preview_table, text=set_name, font=limits_font, width=10, anchor="w").grid(row=row, column=0, padx=(0, 6))
+        value_label = tk.Label(preview_table, text=value, font=limits_font, width=10, anchor="e")
+        value_label.grid(row=row, column=1)
+        preview_table.value_labels.append(value_label)
+    preview_label.preview_table = preview_table
     warning_label = tk.Label(root, anchor="w", padx=30, height=1, font=("TkDefaultFont", 9), fg="red")
     warning_label.pack(fill="x")
     set_preview_message(preview_label, warning_label, "[ No source directory chosen ]")
 
-    split_progress_label = tk.Label(root, text="0 / 0", font=("TkDefaultFont", 10))
-    split_progress_label.pack(fill="x", padx=30, pady=(8, 0))
+    split_progress_label = tk.Label(root, text="0 / 0", font=limits_font)
+    split_progress_label.pack(fill="x", padx=30, pady=(2, 0))
     split_progress_frame = tk.Frame(root)
-    split_progress_frame.pack(fill="x", padx=30, pady=(8, 0))
+    split_progress_frame.pack(fill="x", padx=30, pady=(2, 0))
     progress_total = [1]
     progress_completed = [0]
     progress_display_active = [False]
@@ -998,6 +1121,7 @@ def main():
             width / 2,
             height / 2,
             text=f"{percent:.2f}%",
+            font=limits_font,
             fill="black",
         )
 
@@ -1017,6 +1141,30 @@ def main():
 
     generate_button = tk.Button(root, text="Generate split", command=process_user_inputs, width=18, cursor="hand2")
     generate_button.pack(pady=15, padx=30, fill="x")
+
+    def close_app():
+        split_cancel_event.set()
+        save_app_config({
+            "extension_mode": extension_mode_var.get(),
+            "extensions": extension_var.get(),
+            "train_percentage": train_pct_var.get(),
+            "val_percentage": val_pct_var.get(),
+            "test_percentage": test_pct_var.get(),
+            "min_train": min_train_var.get(),
+            "min_val": min_val_var.get(),
+            "min_test": min_test_var.get(),
+            "max_train": max_train_var.get(),
+            "max_val": max_val_var.get(),
+            "max_test": max_test_var.get(),
+            "parse_all_subdirectories": parse_all_subdirectories_var.get(),
+            "retain_subdirectories": retain_subdirectories_var.get(),
+            "write_split_info": write_split_info_var.get(),
+            "use_seed": random_seed_var.get(),
+            "seed": seed_var.get(),
+        })
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", close_app)
 
     root.update_idletasks()
     window_width = root.winfo_reqwidth()
