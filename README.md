@@ -8,11 +8,12 @@ DatasetSplit is a Python desktop application that splits a dataset into training
 - Custom train/validation/test percentages
 - Optional minimum and maximum file counts for each split
 - File extension filtering (all files or a custom comma-separated list)
-- Recursive directory scanning
+- Optional recursive directory scanning
 - Optional retention of subdirectory structure
 - Output summary file with split totals
 - Overwrite, skip, and abort handling for existing files
 - Retry, skip, and abort handling for copy errors
+- Optional random seed for reproducibility
 
 ## Requirements
 
