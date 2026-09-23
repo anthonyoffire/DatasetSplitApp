@@ -565,7 +565,7 @@ def update_preview(
 
 def main():
     root = tk.Tk()
-    root.title("Dataset Splitter")
+    root.title("DatasetSplit")
     root.resizable(False, False)
     config = load_app_config()
 
