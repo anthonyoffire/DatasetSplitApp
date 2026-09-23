@@ -924,10 +924,10 @@ def main():
         except ValueError:
             train_pct_var.set("")
 
-    train_pct_entry = ttk.Entry(pct_frame, textvariable=train_pct_var, width=8, justify="center", state="readonly")
-    train_pct_entry.grid(row=1, column=0, padx=10, pady=(5, 0))
-    ttk.Entry(pct_frame, textvariable=val_pct_var, width=8, justify="center").grid(row=1, column=1, padx=10, pady=(5, 0))
-    ttk.Entry(pct_frame, textvariable=test_pct_var, width=8, justify="center").grid(row=1, column=2, padx=10, pady=(5, 0))
+    train_pct_entry = ttk.Entry(pct_frame, textvariable=train_pct_var, width=10, justify="center", state="readonly")
+    train_pct_entry.grid(row=1, column=0, padx=10, pady=(5, 0), ipady=2)
+    ttk.Entry(pct_frame, textvariable=val_pct_var, width=10, justify="center").grid(row=1, column=1, padx=10, pady=(5, 0), ipady=2)
+    ttk.Entry(pct_frame, textvariable=test_pct_var, width=10, justify="center").grid(row=1, column=2, padx=10, pady=(5, 0), ipady=2)
 
     def update_preview_from_percentages(*_):
         update_train_percentage()
@@ -988,13 +988,13 @@ def main():
             preview_queue,
         )
 
-    ttk.Entry(limits_frame, textvariable=min_train_var, width=10, justify="center").grid(row=1, column=1, padx=10, pady=(5, 0))
-    ttk.Entry(limits_frame, textvariable=min_val_var, width=10, justify="center").grid(row=1, column=2, padx=10, pady=(5, 0))
-    ttk.Entry(limits_frame, textvariable=min_test_var, width=10, justify="center").grid(row=1, column=3, padx=10, pady=(5, 0))
+    ttk.Entry(limits_frame, textvariable=min_train_var, width=10, justify="center").grid(row=1, column=1, padx=10, pady=(5, 2), ipady=2)
+    ttk.Entry(limits_frame, textvariable=min_val_var, width=10, justify="center").grid(row=1, column=2, padx=10, pady=(5, 2), ipady=2)
+    ttk.Entry(limits_frame, textvariable=min_test_var, width=10, justify="center").grid(row=1, column=3, padx=10, pady=(5, 2), ipady=2)
 
-    ttk.Entry(limits_frame, textvariable=max_train_var, width=10, justify="center").grid(row=2, column=1, padx=10)
-    ttk.Entry(limits_frame, textvariable=max_val_var, width=10, justify="center").grid(row=2, column=2, padx=10)
-    ttk.Entry(limits_frame, textvariable=max_test_var, width=10, justify="center").grid(row=2, column=3, padx=10)
+    ttk.Entry(limits_frame, textvariable=max_train_var, width=10, justify="center").grid(row=2, column=1, padx=10, pady=(2, 0), ipady=2)
+    ttk.Entry(limits_frame, textvariable=max_val_var, width=10, justify="center").grid(row=2, column=2, padx=10, pady=(2, 0), ipady=2)
+    ttk.Entry(limits_frame, textvariable=max_test_var, width=10, justify="center").grid(row=2, column=3, padx=10, pady=(2, 0), ipady=2)
 
     for var in [min_train_var, min_val_var, min_test_var, max_train_var, max_val_var, max_test_var]:
         var.trace_add("write", lambda *_: refresh_preview())
