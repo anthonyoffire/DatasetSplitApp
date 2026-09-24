@@ -1,6 +1,6 @@
 # DatasetSplit
 
-DatasetSplit is a Python application that splits a dataset into training, validation, and test folders. It scans a source directory, optionally filters files by extension, shuffles the dataset, and copies files into output folders based on customizable split percentages. It is non-destructive, using copy rather than move operations.
+DatasetSplit is a Python application for splitting a dataset into training, validation, and test sets. It scans a source directory, optionally filters files by extension, shuffles the dataset, and copies files into their respective output folders based on customizable split percentages. It is non-destructive, using copy rather than move operations.
 
 ## Features
 
